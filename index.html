@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f211c" />
+    <title>JumpLab｜跳躍影像分析</title>
+    <link rel="stylesheet" href="./styles.css?v=20261106-full-video" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#top" aria-label="JumpLab 首頁">
+          <span class="brand-mark">JL</span>
+          <span>
+            <strong>JumpLab</strong>
+            <small>Vertical jump lab</small>
+          </span>
+        </a>
+        <div class="topbar-actions">
+          <span class="version-pill">V3 · 2026</span>
+          <button class="ghost-button" id="openGuide" type="button">使用說明</button>
+        </div>
+      </header>
+
+      <main id="top">
+        <section class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">WEB MOTION ANALYSIS</p>
+            <h1>讓每一次起跳<br /><em>都變成可讀的數據。</em></h1>
+            <p class="hero-text">
+              用一支側面影片，快速整理滯空時間與跳躍高度。資料只在本機處理，
+              適合研究、教學與運動表現觀察。
+            </p>
+            <div class="hero-actions">
+              <button class="primary-button" id="heroUpload" type="button">開始分析 <span>↗</span></button>
+              <a class="text-link" href="#workflow">查看流程 <span>↓</span></a>
+            </div>
+          </div>
+          <div class="hero-visual" aria-label="跳躍分析示意圖">
+            <div class="visual-grid"></div>
+            <div class="jump-arc"></div>
+            <div class="figure">
+              <span class="head"></span>
+              <span class="body"></span>
+              <span class="arm arm-left"></span>
+              <span class="arm arm-right"></span>
+              <span class="leg leg-left"></span>
+              <span class="leg leg-right"></span>
+            </div>
+            <div class="metric-float metric-float-one"><small>FLIGHT TIME</small><strong>0.62 <i>s</i></strong></div>
+            <div class="metric-float metric-float-two"><small>JUMP HEIGHT</small><strong>47.5 <i>cm</i></strong></div>
+          </div>
+        </section>
+
+        <section class="stats-row" aria-label="網站統計">
+          <div><strong>01</strong><span>匯入影片</span></div>
+          <div><strong>02</strong><span>標記關鍵影格</span></div>
+          <div><strong>03</strong><span>產出分析報告</span></div>
+          <div class="stats-note"><span class="status-dot"></span> 影片與姿態資料僅於本機處理</div>
+        </section>
+
+        <section class="workspace-section" id="analyzer">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">ANALYSIS WORKSPACE</p>
+              <h2>把影片變成一份清楚的跳躍紀錄。</h2>
+            </div>
+            <p>先匯入側面跳躍影片，再用逐格時間軸標記腳尖離地與首次落地。</p>
+          </div>
+
+          <div class="workspace-grid">
+            <aside class="control-panel">
+              <div class="panel-topline">
+                <span class="panel-label">設定</span>
+                <span class="step-label">01 / 03</span>
+              </div>
+              <label class="field-label" for="testType">測驗類型</label>
+              <select id="testType" class="select-control">
+                <option value="cmj">CMJ 下蹲跳</option>
+                <option value="sj">SJ 蹲跳</option>
+                <option value="dj">DJ Drop Jump</option>
+              </select>
+              <label class="field-label" for="fps">影片 FPS</label>
+              <select id="fps" class="select-control">
+                <option value="30">30</option>
+                <option value="60">60</option>
+                <option value="120">120</option>
+                <option value="240" selected>240</option>
+              </select>
+
+              <input id="videoInput" type="file" accept="video/*" hidden />
+              <button class="upload-button" id="uploadButton" type="button">
+                <span class="upload-icon">＋</span>
+                <span><strong>匯入側面跳躍影片</strong><small>建議完整保留頭部與腳掌</small></span>
+              </button>
+
+              <div class="mini-metrics">
+                <div><span>FLIGHT TIME</span><strong id="flightMetric">— <i>s</i></strong></div>
+                <div><span>JUMP HEIGHT</span><strong id="heightMetric">— <i>cm</i></strong></div>
+              </div>
+            </aside>
+
+            <div class="video-panel">
+              <div class="video-stage-container">
+                <div class="video-stage" id="videoStage">
+                  <div class="empty-video" id="emptyVideo">
+                    <div class="play-orb">▶</div>
+                    <p>尚未選擇影片</p>
+                    <small>匯入影片後可在這裡預覽與逐格標記</small>
+                  </div>
+                  <video id="videoPreview" controls playsinline hidden></video>
+                  <canvas id="poseCanvas" hidden aria-label="AI 骨骼標記覆蓋層"></canvas>
+                  <div class="video-overlay" id="videoOverlay" hidden>
+                    <span id="videoName">影片</span>
+                    <span id="videoTime">00:00.000</span>
+                  </div>
+                  <div class="angle-readout floating-panel" id="angleReadout" hidden>
+                    <div><span>髖</span><strong id="hipAngle">—°</strong></div>
+                    <div><span>膝</span><strong id="kneeAngle">—°</strong></div>
+                    <div><span>踝</span><strong id="ankleAngle">—°</strong></div>
+                    <small id="poseFrameLabel">尚未執行骨骼分析</small>
+                  </div>
+                </div>
+              </div>
+              <div class="video-controls-surface">
+                <div class="timeline-wrap">
+                <div class="timeline-labels"><span>剪輯範圍</span><span id="durationLabel">00:00.000</span></div>
+                <input class="range-control" id="clipRange" type="range" min="0" max="100" value="100" disabled />
+                <div class="timeline-labels"><span>逐格時間軸</span><span id="frameLabel">Frame 0 / 1</span></div>
+                <input class="range-control accent-range" id="frameRange" type="range" min="0" max="0" value="0" disabled />
+                </div>
+                <div class="tool-row">
+                <button class="tool-button" id="previousFrame" type="button" disabled>← <span>上一格</span></button>
+                <button class="tool-button play-button" id="playPause" type="button" disabled>▶ <span>播放</span></button>
+                <button class="tool-button" id="nextFrame" type="button" disabled><span>下一格</span> →</button>
+                <span class="tool-divider"></span>
+                  <button class="mark-button" id="btnMarkS" type="button" disabled><b>S</b> 開始下蹲</button>
+                <button class="mark-button" id="takeoffButton" type="button" disabled><b>T</b> 腳尖離地</button>
+                <button class="mark-button" id="landingButton" type="button" disabled><b>L</b> 首次落地</button>
+                  <button class="mark-button" id="btnMarkF" type="button" disabled><b>F</b> 完成落地</button>
+                <button class="mark-button ai-button" id="autoPoseButton" type="button" disabled>✦ AI 骨骼分析</button>
+                <button class="mark-button manual-button" id="manualPoseButton" type="button" disabled>＋ 手動標記關節</button>
+                </div>
+                <div class="marker-readout phase-readout">
+                  <span id="readoutS">S —</span>
+                  <span id="takeoffReadout">T —</span>
+                  <span id="landingReadout">L —</span>
+                  <span id="readoutF">F —</span>
+                </div>
+              </div>
+              <div class="analysis-status" id="analysisStatus" role="status">請先匯入影片，再標記 T／L 關鍵影格。</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="results-section" id="results">
+          <div class="result-card result-summary">
+            <p class="eyebrow">RESULT SUMMARY</p>
+            <h2>跳躍結果</h2>
+            <p class="muted">由滯空時間換算跳躍高度，建議逐格複核 T／L 標記。</p>
+            <div class="big-results">
+              <div><span>Flight Time</span><strong id="resultFlight">— <i>s</i></strong></div>
+              <div><span>Jump Height</span><strong id="resultHeight">— <i>cm</i></strong></div>
+            </div>
+            <div class="result-actions">
+              <button class="primary-button small" id="copyResult" type="button">複製結果</button>
+              <button class="secondary-button small" id="saveAttempt" type="button" disabled>儲存本次試跳</button>
+            </div>
+          </div>
+          <div class="result-card attempts-card">
+            <div class="card-heading"><h3>試跳趨勢</h3><span>最多 3 次</span></div>
+            <div class="attempt-list" id="attemptList">
+              <div class="attempt-empty">完成一次標記後，試跳結果會顯示在這裡。</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="profile-section" id="profile">
+          <div class="section-heading compact">
+            <div><p class="eyebrow">ATHLETE PROFILE</p><h2>留下本次測驗的基本資訊。</h2></div>
+            <p>資料只用於本次報告，不會上傳。</p>
+          </div>
+          <form class="profile-form" id="profileForm">
+            <label>單位<input name="team" placeholder="例如：校隊／實驗室" /></label>
+            <label>姓名<input name="name" placeholder="選填" /></label>
+            <label>身高（cm）<input name="height" type="number" min="0" placeholder="—" /></label>
+            <label>體重（kg）<input name="weight" type="number" min="0" placeholder="—" /></label>
+            <label>年齡<input name="age" type="number" min="0" placeholder="—" /></label>
+            <label>性別<select name="gender"><option value="">請選擇</option><option>男性</option><option>女性</option><option>其他／不提供</option></select></label>
+            <label class="wide">運動專項<input name="sport" placeholder="例如：籃球、田徑、一般健身" /></label>
+          </form>
+        </section>
+
+        <section class="report-section">
+          <div>
+            <p class="eyebrow">REPORT</p>
+            <h2>需要一份可分享的報告？</h2>
+            <p>整理選手資料、目前結果與最多三次試跳趨勢，直接列印或另存成 PDF。</p>
+          </div>
+          <button class="secondary-button" id="printReport" type="button">列印／儲存 PDF <span>↗</span></button>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div><strong>JumpLab</strong><span>Research · Teaching · Performance</span></div>
+        <div>© 2026 JumpLab · 本工具不作為醫療診斷或測力板替代</div>
+      </footer>
+    </div>
+
+    <div class="modal-backdrop" id="safetyModal" role="dialog" aria-modal="true" aria-labelledby="safetyTitle">
+      <div class="safety-modal">
+        <div class="safety-icon">✓</div>
+        <p class="eyebrow">BEFORE YOU JUMP</p>
+        <h2 id="safetyTitle">跳躍前請先確認安全狀況</h2>
+        <p>JumpLab 是研究、教學與運動表現觀察工具，不是醫療診斷或測力板替代品。</p>
+        <ul>
+          <li>測試區域平整、乾燥、無障礙物，並有足夠落地空間。</li>
+          <li>目前沒有膝、髖、踝或下背疼痛、腫脹、不穩或近期受傷。</li>
+          <li>目前沒有胸痛、異常呼吸困難、頭暈、昏厥感或明顯不適。</li>
+          <li>已完成熱身並穿著合適止滑鞋；出現不適請立即停止。</li>
+        </ul>
+        <label class="safety-check"><input id="safetyConfirm" type="checkbox" /><span>我已閱讀並確認以上全部安全事項<small>若任何一項不符合，請不要進行跳躍測驗。</small></span></label>
+        <button class="primary-button full" id="enterApp" type="button" disabled>進入分析工具</button>
+      </div>
+    </div>
+
+    <div class="modal-backdrop hidden" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+      <div class="guide-modal">
+        <button class="modal-close" id="closeGuide" type="button" aria-label="關閉">×</button>
+        <p class="eyebrow">QUICK GUIDE</p>
+        <h2 id="guideTitle">三步驟完成一次分析</h2>
+        <ol class="guide-list">
+          <li><strong>匯入影片</strong><span>選擇側面拍攝的跳躍影片，建議完整保留頭部與腳掌。</span></li>
+          <li><strong>標記 T／L</strong><span>在逐格時間軸上標記腳尖離地與首次落地。</span></li>
+          <li><strong>整理報告</strong><span>儲存試跳、填寫選手資料，再列印或儲存 PDF。</span></li>
+        </ol>
+      </div>
+    </div>
+
+    <script src="./app.js?v=20261105-local-pose"></script>
+  </body>
+</html>
