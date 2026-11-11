@@ -433,7 +433,6 @@ function setAnalysisLock(locked) {
 }
 
 async function analyzeVideoPose() {
- async function analyzeVideoPose() {
   if (!videoUrl || videoPreview.readyState < 2) {
     analysisStatus.className = "analysis-status error";
     analysisStatus.textContent = "請先匯入並載入影片，再執行骨骼分析。";
@@ -514,7 +513,6 @@ async function analyzeVideoPose() {
   }
 }
 
-}
 
 const formatTime = (seconds) => {
   if (!Number.isFinite(seconds)) return "00:00.000";
