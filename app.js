@@ -89,6 +89,53 @@ function smoothPoseData(frames, radius = 2) {
   });
   return result;
 }
+// 新增：基於 Y 軸位移特徵的自動分期演算法
+function autoDetectJumpPhases(poseDataMap) {
+  const frames = [...poseDataMap.keys()].sort((a, b) => a - b);
+  if (frames.length < 15) return null;
+
+  let maxHipY = -Infinity;
+  let autoS = null;
+
+  // 1. 尋找 S (開始下蹲 / 最大髖關節屈曲)：髖部 Y 座標最大值 (畫面最下方)
+  frames.forEach((frame) => {
+    const points = poseDataMap.get(frame);
+    if (points.hip.y > maxHipY) {
+      maxHipY = points.hip.y;
+      autoS = frame;
+    }
+  });
+
+  // 2. 建立腳尖 (Toe) 的垂直位移軌跡基準線
+  // 取影片最前面的 10 幀平均值作為站立時的腳尖地平線
+  const baselineToeY = frames.slice(0, 10).reduce((sum, f) => sum + poseDataMap.get(f).toe.y, 0) / 10;
+  
+  // 設定離地判定閾值 (例如腳尖向上抬升超過畫面高度的 1.5%)
+  const takeoffThreshold = baselineToeY - 0.015;
+
+  let autoT = null;
+  let autoL = null;
+  let inAir = false;
+
+  // 從 S (最低點) 之後開始尋找起跳與落地
+  const framesAfterS = frames.filter(f => f >= autoS);
+  for (let i = 0; i < framesAfterS.length; i++) {
+    const frame = framesAfterS[i];
+    const toeY = poseDataMap.get(frame).toe.y;
+
+    if (!inAir && toeY < takeoffThreshold) {
+      // 腳尖明顯高於基準線，判定為 T (起跳)
+      autoT = frame;
+      inAir = true;
+    } else if (inAir && toeY >= takeoffThreshold) {
+      // 在空中後，腳尖再次下降回到基準線，判定為 L (落地)
+      autoL = frame;
+      break;
+    }
+  }
+
+  return { autoS, autoT, autoL };
+}
 
 function getVideoContentRect() {
   const stageRect = videoStage.getBoundingClientRect();
