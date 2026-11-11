@@ -1,5 +1,5 @@
 // ============================================================================
-// 1. DOM 元素選取與全域變數宣告
+// JumpLab 核心控制與影片載入腳本
 // ============================================================================
 
 const $ = (selector) => document.querySelector(selector);
@@ -23,14 +23,11 @@ const takeoffReadout = $("#takeoffReadout");
 const landingReadout = $("#landingReadout");
 const readoutS = $("#readoutS");
 const readoutF = $("#readoutF");
-const saveAttempt = $("#saveAttempt");
-const attemptList = $("#attemptList");
 const analysisStatus = $("#analysisStatus");
 const poseCanvas = $("#poseCanvas");
 const poseContext = poseCanvas.getContext("2d");
 const angleReadout = $("#angleReadout");
 const autoPoseButton = $("#autoPoseButton");
-const manualPoseButton = $("#manualPoseButton");
 const videoStage = $("#videoStage");
 
 let videoUrl = "";
@@ -39,17 +36,13 @@ let takeoffFrame = null;
 let landingFrame = null;
 let startFrame = null;
 let finishFrame = null;
-let attempts = [];
 let poseLandmarker = null;
 let poseLoading = false;
-let lastPoseTimestamp = 0;
 let poseData = new Map();
 let poseAnalysisRange = null;
-let isAnalyzing = false;
-let kinematicsChartInstance = null;
 
 // ============================================================================
-// 2. 核心運算與自動分期演算法
+// 1. 基礎角度與運算工具
 // ============================================================================
 
 function angleAt(vertex, pointA, pointB) {
@@ -69,332 +62,64 @@ function selectPosePoints(landmarks) {
     : { shoulder: landmarks[12], hip: landmarks[24], knee: landmarks[26], ankle: landmarks[28], toe: landmarks[32] };
 }
 
-function smoothPoseData(frames, radius = 3) {
-  const result = new Map();
-  [...frames.keys()].sort((a, b) => a - b).forEach((frame) => {
-    const points = {};
-    ["shoulder", "hip", "knee", "ankle", "toe"].forEach((name) => {
-      const samples = [];
-      for (let offset = -radius; offset <= radius; offset += 1) {
-        const point = frames.get(frame + offset)?.[name];
-        if (point) samples.push(point);
-      }
-      if (!samples.length) return;
-      points[name] = {
-        x: samples.reduce((sum, point) => sum + point.x, 0) / samples.length,
-        y: samples.reduce((sum, point) => sum + point.y, 0) / samples.length,
-        visibility: Math.min(...samples.map((point) => point.visibility ?? 1))
-      };
-    });
-    if (Object.keys(points).length === 5) result.set(frame, points);
-  });
-  return result;
-}
-
-function autoDetectJumpPhases(poseDataMap) {
-  const frames = [...poseDataMap.keys()].sort((a, b) => a - b);
-  if (frames.length < 15) return null;
-
-  let maxHipY = -Infinity;
-  let autoS = null;
-
-  frames.forEach((frame) => {
-    const points = poseDataMap.get(frame);
-    if (points.hip.y > maxHipY) {
-      maxHipY = points.hip.y;
-      autoS = frame;
-    }
-  });
-
-  const baselineToeY = frames.slice(0, 10).reduce((sum, f) => sum + poseDataMap.get(f).toe.y, 0) / 10;
-  const takeoffThreshold = baselineToeY - 0.015;
-
-  let autoT = null;
-  let autoL = null;
-  let inAir = false;
-
-  const framesAfterS = frames.filter(f => f >= autoS);
-  for (let i = 0; i < framesAfterS.length; i++) {
-    const frame = framesAfterS[i];
-    const toeY = poseDataMap.get(frame).toe.y;
-
-    if (!inAir && toeY < takeoffThreshold) {
-      autoT = frame;
-      inAir = true;
-    } else if (inAir && toeY >= takeoffThreshold) {
-      autoL = frame;
-      break;
-    }
-  }
-
-  let autoF = frames[frames.length - 1];
-  if (autoL !== null) {
-    let maxLandingHipY = -Infinity;
-    frames.filter(f => f >= autoL && f <= autoL + 60).forEach((frame) => {
-      const points = poseDataMap.get(frame);
-      if (points && points.hip.y > maxLandingHipY) {
-        maxLandingHipY = points.hip.y;
-        autoF = frame;
-      }
-    });
-  }
-
-  return { autoS, autoT, autoL, autoF };
-}
-
 // ============================================================================
-// 3. 繪圖與骨骼標記渲染
+// 2. 影片載入與渲染核心（已修復黑屏）
 // ============================================================================
 
-function getVideoContentRect() {
-  const stageRect = videoStage.getBoundingClientRect();
-  const videoRect = videoPreview.getBoundingClientRect();
-  const sourceWidth = videoPreview.videoWidth || videoRect.width;
-  const sourceHeight = videoPreview.videoHeight || videoRect.height;
-  if (!sourceWidth || !sourceHeight) return videoRect;
-  const sourceRatio = sourceWidth / sourceHeight;
-  const boxRatio = videoRect.width / videoRect.height;
-  if (sourceRatio > boxRatio) {
-    const height = videoRect.width / sourceRatio;
-    return { left: videoRect.left, top: videoRect.top + (videoRect.height - height) / 2, width: videoRect.width, height };
-  }
-  const width = videoRect.height * sourceRatio;
-  return { left: videoRect.left + (videoRect.width - width) / 2, top: videoRect.top, width, height: videoRect.height };
-}
-
-function drawSelectedPose(points) {
-  poseCanvas.hidden = false;
-  const stage = $("#videoStage");
-  const stageRect = stage.getBoundingClientRect();
-  const videoRect = getVideoContentRect();
-  const dpr = window.devicePixelRatio || 1;
+function loadVideo(file) {
+  if (!file) return;
+  if (videoUrl) URL.revokeObjectURL(videoUrl);
   
-  poseCanvas.width = Math.max(1, Math.round(stageRect.width * dpr));
-  poseCanvas.height = Math.max(1, Math.round(stageRect.height * dpr));
-  poseCanvas.style.width = `${stageRect.width}px`;
-  poseCanvas.style.height = `${stageRect.height}px`;
+  videoUrl = URL.createObjectURL(file);
+  poseData = new Map();
+  takeoffFrame = null;
+  landingFrame = null;
+  startFrame = null;
+  finishFrame = null;
   
-  poseContext.setTransform(dpr, 0, 0, dpr, 0, 0);
-  poseContext.clearRect(0, 0, stageRect.width, stageRect.height);
+  // 強制重設畫面狀態，確保影片元素顯示
+  videoPreview.pause();
+  videoPreview.removeAttribute("src");
+  videoPreview.load();
   
-  const pointNames = ["肩", "髖", "膝", "踝", "尖"];
-  const chain = [points.shoulder, points.hip, points.knee, points.ankle, points.toe];
-  const visibleChain = chain.filter((point) => point && (point.visibility ?? 1) >= 0.2);
+  videoPreview.src = videoUrl;
+  videoPreview.hidden = false;
+  emptyVideo.hidden = true;
+  videoOverlay.hidden = false;
   
-  if (visibleChain.length < 5) return points;
-  
-  const toCanvasPoint = (point) => ({
-    x: (videoRect.left - stageRect.left) + point.x * videoRect.width,
-    y: (videoRect.top - stageRect.top) + point.y * videoRect.height
-  });
-  
-  const canvasChain = chain.map(toCanvasPoint);
-  
-  poseContext.lineCap = "round";
-  poseContext.lineJoin = "round";
-  
-  canvasChain.slice(0, -1).forEach((point, index) => {
-    const next = canvasChain[index + 1];
-    poseContext.beginPath();
-    poseContext.moveTo(point.x, point.y);
-    poseContext.lineTo(next.x, next.y);
-    poseContext.strokeStyle = "rgba(0, 255, 255, 0.35)";
-    poseContext.lineWidth = Math.max(8, stageRect.width / 80);
-    poseContext.shadowColor = "#00ffff";
-    poseContext.shadowBlur = 10;
-    poseContext.stroke();
-    
-    poseContext.shadowBlur = 0;
-    poseContext.beginPath();
-    poseContext.moveTo(point.x, point.y);
-    poseContext.lineTo(next.x, next.y);
-    poseContext.strokeStyle = "#00ffff";
-    poseContext.lineWidth = Math.max(1.5, stageRect.width / 250);
-    poseContext.stroke();
-  });
-  
-  canvasChain.forEach((point, index) => {
-    const { x, y } = point;
-    const baseRadius = Math.max(4, stageRect.width / 130);
-    
-    poseContext.beginPath();
-    poseContext.arc(x, y, baseRadius + 2, 0, Math.PI * 2);
-    poseContext.fillStyle = "rgba(10, 25, 30, 0.95)";
-    poseContext.strokeStyle = "#00ffff";
-    poseContext.lineWidth = 1.5;
-    poseContext.fill();
-    poseContext.stroke();
-    
-    const fontSize = Math.max(12, stageRect.width / 55);
-    poseContext.font = `600 ${fontSize}px sans-serif`;
-    const textWidth = poseContext.measureText(pointNames[index]).width;
-    
-    poseContext.fillStyle = "rgba(0, 15, 20, 0.75)";
-    poseContext.fillRect(x + 10, y - fontSize - 4, textWidth + 10, fontSize + 8);
-    poseContext.fillStyle = "#00ffff";
-    poseContext.fillText(pointNames[index], x + 16, y - 2);
-  });
-  
-  return points;
-}
-
-function renderStoredPose(frame) {
-  let renderedFrame = frame;
-  let points = poseData.get(frame);
-  if (!points && poseAnalysisRange && frame >= poseAnalysisRange.start && frame <= poseAnalysisRange.end && poseData.size) {
-    renderedFrame = [...poseData.keys()].reduce((nearest, candidate) => (
-      Math.abs(candidate - frame) < Math.abs(nearest - frame) ? candidate : nearest
-    ));
-    points = poseData.get(renderedFrame);
-  }
-  if (!points) {
-    clearPoseOverlay();
-    return;
-  }
-  drawSelectedPose(points);
-  showAngles([points.shoulder, points.hip, points.knee, points.ankle, points.toe], `AI 骨骼標記 · Frame ${renderedFrame}`);
-}
-
-function clearPoseOverlay() {
-  poseContext.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
-  poseCanvas.hidden = true;
-  angleReadout.hidden = true;
-}
-
-function showAngles(points, statusText) {
-  const hip = angleAt(points[1], points[0], points[2]);
-  const knee = angleAt(points[2], points[1], points[3]);
-  const ankle = angleAt(points[3], points[2], points[4]);
-  $("#hipAngle").textContent = `${(180 - hip).toFixed(1)}°`;
-  $("#kneeAngle").textContent = `${(180 - knee).toFixed(1)}°`;
-  $("#ankleAngle").textContent = `${(90 - angleAt(points[4], points[3], points[2])).toFixed(1)}°`;
-  angleReadout.hidden = false;
-  analysisStatus.className = "analysis-status success";
-  analysisStatus.textContent = statusText;
-}
-
-// ============================================================================
-// 4. MediaPipe 模型與影片載入核心
-// ============================================================================
-
-async function getPoseLandmarker() {
-  if (poseLandmarker) return poseLandmarker;
-  if (poseLoading) {
-    while (poseLoading) await new Promise((resolve) => setTimeout(resolve, 100));
-    return poseLandmarker;
-  }
-  poseLoading = true;
+  $("#videoName").textContent = file.name;
   analysisStatus.className = "analysis-status";
-  analysisStatus.textContent = "正在載入 AI 骨骼模型……";
-  try {
-    const { FilesetResolver, PoseLandmarker } = await import("./vendor/mediapipe/vision_bundle.mjs");
-    const vision = await FilesetResolver.forVisionTasks(new URL("./vendor/mediapipe/wasm", window.location.href).href);
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: new URL("./models/pose_landmarker_lite.task", window.location.href).href
-      },
-      runningMode: "VIDEO",
-      numPoses: 1,
-      minPoseDetectionConfidence: .3,
-      minPosePresenceConfidence: .3,
-      minTrackingConfidence: .3
+  analysisStatus.textContent = "影片已載入，正在讀取中繼資料...";
+  
+  videoPreview.addEventListener("loadedmetadata", () => {
+    totalFrames = Math.max(1, Math.round(videoPreview.duration * Number(fpsSelect.value)));
+    frameRange.max = String(totalFrames);
+    clipRange.max = String(totalFrames);
+    
+    // 啟用控制元件
+    [frameRange, clipRange, $("#previousFrame"), $("#nextFrame"), $("#playPause"), autoPoseButton].forEach((el) => {
+      if (el) el.disabled = false;
     });
-    return poseLandmarker;
-  } finally {
-    poseLoading = false;
-  }
-}
-
-function waitForSeek(video, targetTime) {
-  if (Math.abs(video.currentTime - targetTime) < 0.0005 && video.readyState >= 2) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => {
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("error", onError);
-      clearTimeout(timeout);
-    };
-    const finish = (callback) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      callback();
-    };
-    const onSeeked = () => finish(resolve);
-    const onError = () => finish(() => reject(new Error("影片影格載入失敗")));
-    const timeout = setTimeout(() => finish(() => reject(new Error("等待影片影格逾時"))), 4000);
     
-    video.addEventListener("seeked", onSeeked, { once: true });
-    video.addEventListener("error", onError, { once: true });
-    video.currentTime = targetTime;
-  });
-}
-
-function setAnalysisLock(locked) {
-  [frameRange, clipRange, $("#previousFrame"), $("#nextFrame"), $("#playPause"), autoPoseButton].forEach((element) => {
-    if (element) element.disabled = locked;
-  });
-  autoPoseButton.textContent = locked ? "分析中…" : "✦ AI 骨骼分析";
-}
-
-async function analyzeVideoPose() {
-  if (!videoUrl || videoPreview.readyState < 2) return;
-  try {
-    const landmarker = await getPoseLandmarker();
-    videoPreview.pause();
-    const fps = Number(fpsSelect.value);
-    const analysisStart = 0;
-    const analysisEnd = totalFrames;
-    
-    const rawPoseData = new Map();
-    for (let frame = analysisStart; frame <= analysisEnd; frame += 1) {
-      const time = frame / fps;
-      await waitForSeek(videoPreview, time);
-      const timestamp = Math.max(Math.round(time * 1000), lastPoseTimestamp + 1);
-      lastPoseTimestamp = timestamp;
-      const result = landmarker.detectForVideo(videoPreview, timestamp);
-      const landmarks = result?.landmarks?.[0];
-      if (landmarks) {
-        const points = selectPosePoints(landmarks);
-        const visible = [points.shoulder, points.hip, points.knee, points.ankle, points.toe]
-          .every((point) => point && (point.visibility ?? 1) >= .2);
-        if (visible) rawPoseData.set(frame, points);
-      }
-      
-      if (frame % 4 === 0 || frame === analysisEnd) {
-        const progress = Math.round((frame / analysisEnd) * 100);
-        analysisStatus.className = "analysis-status";
-        analysisStatus.textContent = `AI 自動分析中… ${progress}%（Frame ${frame}/${analysisEnd}）`;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    }
-    
-    poseData = smoothPoseData(rawPoseData, 3);
-    if (!poseData.size) throw new Error("在影片中找不到清楚的人體姿態");
-
-    const phases = autoDetectJumpPhases(poseData);
-    if (phases && phases.autoT && phases.autoL) {
-      startFrame = phases.autoS;
-      takeoffFrame = phases.autoT;
-      landingFrame = phases.autoL;
-      finishFrame = phases.autoF;
-      updateReadouts();
-      calculateResult();
-    }
-
-    poseAnalysisRange = { start: analysisStart, end: analysisEnd };
-    frameRange.value = "0";
-    videoPreview.currentTime = 0;
-    renderStoredPose(0);
+    $("#durationLabel").textContent = formatTime(videoPreview.duration || 0);
+    updateReadouts();
     
     analysisStatus.className = "analysis-status success";
-    analysisStatus.textContent = `AI 分析完成：已自動標記 S / T / L / F。`;
+    analysisStatus.textContent = "影片已準備就緒，可開始播放或執行 AI 骨骼分析。";
+  }, { once: true });
 
-  } catch (error) {
-    console.error("Pose analysis failed:", error);
+  videoPreview.addEventListener("error", (e) => {
+    console.error("Video element error:", videoPreview.error);
     analysisStatus.className = "analysis-status error";
-    analysisStatus.textContent = `AI 自動分析失敗，請確認影片包含完整全身入鏡。`;
-  }
+    analysisStatus.textContent = "影片載入失敗：瀏覽器無法解碼此格式，請嘗試更換標準 MP4 檔案。";
+  }, { once: true });
+}
+
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds)) return "00:00.000";
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds - minutes * 60;
+  return `${String(minutes).padStart(2, "0")}:${remaining.toFixed(3).padStart(6, "0")}`;
 }
 
 function updateReadouts() {
@@ -408,69 +133,8 @@ function updateReadouts() {
   $("#videoTime").textContent = formatTime(videoPreview.currentTime || current / fps);
 }
 
-function calculateResult() {
-  if (takeoffFrame === null || landingFrame === null || landingFrame <= takeoffFrame) return;
-  const seconds = (landingFrame - takeoffFrame) / Number(fpsSelect.value);
-  const height = (9.81 * seconds * seconds * 100) / 8;
-  flightMetric.innerHTML = `${seconds.toFixed(3)} <i>s</i>`;
-  heightMetric.innerHTML = `${height.toFixed(1)} <i>cm</i>`;
-  resultFlight.innerHTML = `${seconds.toFixed(3)} <i>s</i>`;
-  resultHeight.innerHTML = `${height.toFixed(1)} <i>cm</i>`;
-}
-
-const formatTime = (seconds) => {
-  if (!Number.isFinite(seconds)) return "00:00.000";
-  const minutes = Math.floor(seconds / 60);
-  const remaining = seconds - minutes * 60;
-  return `${String(minutes).padStart(2, "0")}:${remaining.toFixed(3).padStart(6, "0")}`;
-};
-
 // ============================================================================
-// 5. 影片載入主程式 (修復黑屏與按鈕觸發)
-// ============================================================================
-
-function loadVideo(file) {
-  if (!file) return;
-  if (videoUrl) URL.revokeObjectURL(videoUrl);
-  
-  videoUrl = URL.createObjectURL(file);
-  poseData = new Map();
-  poseAnalysisRange = null;
-  takeoffFrame = null;
-  landingFrame = null;
-  startFrame = null;
-  finishFrame = null;
-  
-  clearPoseOverlay();
-  videoPreview.src = videoUrl;
-  videoPreview.load();
-  videoPreview.hidden = false;
-  emptyVideo.hidden = true;
-  videoOverlay.hidden = false;
-  $("#videoName").textContent = file.name;
-  analysisStatus.className = "analysis-status";
-  analysisStatus.textContent = "影片已載入，正在讀取中繼資料...";
-  
-  videoPreview.addEventListener("loadedmetadata", async () => {
-    totalFrames = Math.max(1, Math.round(videoPreview.duration * Number(fpsSelect.value)));
-    frameRange.max = String(totalFrames);
-    clipRange.max = String(totalFrames);
-    [frameRange, clipRange, $("#previousFrame"), $("#nextFrame"), $("#playPause"), autoPoseButton].forEach((el) => { el.disabled = false; });
-    $("#durationLabel").textContent = formatTime(videoPreview.duration || 0);
-    updateReadouts();
-    
-    analysisStatus.textContent = "影片已就緒，AI 正在自動掃描全片...";
-    await analyzeVideoPose();
-  }, { once: true });
-
-  videoPreview.addEventListener("error", () => {
-    analysisStatus.className = "analysis-status error";
-    analysisStatus.textContent = "瀏覽器無法解碼此影片格式，建議轉換為標準 MP4 (H.264) 後重試。";
-  }, { once: true });
-}
-
-// ============================================================================
-// 6. 事件綁定區
+// 3. 事件綁定區
 // ============================================================================
 
 safetyConfirm.addEventListener("change", () => { enterApp.disabled = !safetyConfirm.checked; });
@@ -486,7 +150,6 @@ frameRange.addEventListener("input", () => {
   const frame = Number(frameRange.value || 0);
   if (videoPreview.duration) videoPreview.currentTime = frame / Number(fpsSelect.value);
   updateReadouts();
-  renderStoredPose(frame);
 });
 
 videoPreview.addEventListener("timeupdate", () => {
@@ -494,7 +157,6 @@ videoPreview.addEventListener("timeupdate", () => {
     const currentFrame = Math.round(videoPreview.currentTime * Number(fpsSelect.value));
     frameRange.value = String(currentFrame);
     updateReadouts();
-    if (poseData.size) renderStoredPose(currentFrame);
   }
 });
 
@@ -505,8 +167,6 @@ $("#playPause").addEventListener("click", () => {
   else { videoPreview.pause(); $("#playPause").innerHTML = "▶ <span>播放</span>"; }
 });
 
-autoPoseButton.addEventListener("click", analyzeVideoPose);
-
 function setAppEnabled(enabled) {
   [videoInput, $("#testType"), fpsSelect, $("#uploadButton"), $("#heroUpload")].forEach((element) => {
     if (element) element.disabled = !enabled;
@@ -515,3 +175,4 @@ function setAppEnabled(enabled) {
 
 safetyModal.classList.add("hidden");
 setAppEnabled(true);
+
