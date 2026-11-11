@@ -6,6 +6,8 @@
     <meta name="theme-color" content="#0f211c" />
     <title>JumpLab｜跳躍影像分析</title>
     <link rel="stylesheet" href="./styles.css?v=20261106-full-video" />
+    <!-- 引入 Chart.js 視覺化圖表庫 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -173,6 +175,20 @@
             <div class="attempt-list" id="attemptList">
               <div class="attempt-empty">完成一次標記後，試跳結果會顯示在這裡。</div>
             </div>
+          </div>
+        </section>
+
+        <!-- 新增：關節角度與時間關係圖表區塊 -->
+        <section class="chart-section" id="chartSection" style="margin-bottom: 125px; display: none;">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">KINEMATICS CHART</p>
+              <h2>關節角度與時間曲線</h2>
+            </div>
+            <p>點擊圖表可直接跳轉至該時間點・點擊上方圖例可隱藏曲線。</p>
+          </div>
+          <div style="width: 100%; height: 400px; padding: 20px; background: white; border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow);">
+            <canvas id="kinematicsChart"></canvas>
           </div>
         </section>
 
