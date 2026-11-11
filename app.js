@@ -51,19 +51,20 @@ let poseAnalysisRange = null;      // 記錄 AI 分析的起始與結束影格�
 let isAnalyzing = false;           // 標記目前是否正在執行 AI 逐格分析
 let manualPoseActive = false;      // 標記是否進入手動點擊標記模式
 let manualPoints = [];             // 儲存手動點擊的關節座標點
+let kinematicsChartInstance = null; // 儲存 Chart.js 圖表實例
 
 // ============================================================================
 // 2. 核心運算與資料處理工具函式
 // ============================================================================
 
-// 定義標準人體骨架 33 點的連線對照表 (目前系統未使用，但保留供未來擴充)
+// 定義標準人體骨架 33 點的連線對照表
 const POSE_CONNECTIONS = [
   [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24],
   [23, 25], [25, 27], [24, 26], [26, 28], [27, 29], [28, 30],
   [27, 31], [28, 32], [11, 12], [23, 24]
 ];
 
-// 計算並回傳三個座標點 (例如：髖、膝、踝) 之間的夾角 (度數)
+// 計算並回傳三個座標點之間的夾角 (度數)
 function angleAt(vertex, pointA, pointB) {
   const a = Math.atan2(pointA.y - vertex.y, pointA.x - vertex.x);
   const b = Math.atan2(pointB.y - vertex.y, pointB.x - vertex.x);
@@ -72,18 +73,17 @@ function angleAt(vertex, pointA, pointB) {
   return degrees;
 }
 
-// 根據模型輸出的 33 個關節點，判斷人體朝向左或右，並篩選出我們需要的 5 個核心關節
+// 根據模型輸出的 33 個關節點，篩選出 5 個核心關節
 function selectPosePoints(landmarks) {
   const visibility = (index) => landmarks[index]?.visibility ?? 0;
   const score = (indices) => indices.reduce((sum, index) => sum + visibility(index), 0);
-  // 比較左側與右側關節的可見度總分，取分數高的一側進行分析
   const left = score([11, 23, 25, 27, 31]) >= score([12, 24, 26, 28, 32]);
   return left
     ? { shoulder: landmarks[11], hip: landmarks[23], knee: landmarks[25], ankle: landmarks[27], toe: landmarks[31] }
     : { shoulder: landmarks[12], hip: landmarks[24], knee: landmarks[26], ankle: landmarks[28], toe: landmarks[32] };
 }
 
-// 對提取出來的連續關節座標進行平滑化處理 (Moving Average)，減少 AI 辨識抖動
+// 對提取出來的連續關節座標進行平滑化處理 (Moving Average)，減少抖動
 function smoothPoseData(frames, radius = 2) {
   const result = new Map();
   [...frames.keys()].sort((a, b) => a - b).forEach((frame) => {
@@ -114,7 +114,6 @@ function autoDetectJumpPhases(poseDataMap) {
   let maxHipY = -Infinity;
   let autoS = null;
 
-  // 1. 尋找 S (開始下蹲 / 最大髖關節屈曲)：髖部 Y 座標最大值 (畫面最下方)
   frames.forEach((frame) => {
     const points = poseDataMap.get(frame);
     if (points.hip.y > maxHipY) {
@@ -123,17 +122,13 @@ function autoDetectJumpPhases(poseDataMap) {
     }
   });
 
-  // 2. 建立腳尖 (Toe) 的垂直位移軌跡基準線 (取前 10 幀平均)
   const baselineToeY = frames.slice(0, 10).reduce((sum, f) => sum + poseDataMap.get(f).toe.y, 0) / 10;
-  
-  // 設定離地判定閾值 (例如腳尖向上抬升超過畫面高度的 1.5%)
   const takeoffThreshold = baselineToeY - 0.015;
 
   let autoT = null;
   let autoL = null;
   let inAir = false;
 
-  // 從 S (最低點) 之後開始尋找起跳與落地
   const framesAfterS = frames.filter(f => f >= autoS);
   for (let i = 0; i < framesAfterS.length; i++) {
     const frame = framesAfterS[i];
@@ -141,9 +136,9 @@ function autoDetectJumpPhases(poseDataMap) {
 
     if (!inAir && toeY < takeoffThreshold) {
       autoT = frame;
-      inAir = true; // 狀態改變為在空中
+      inAir = true;
     } else if (inAir && toeY >= takeoffThreshold) {
-      autoL = frame; // 再次回到基準線以下，判定落地
+      autoL = frame;
       break;
     }
   }
@@ -152,10 +147,9 @@ function autoDetectJumpPhases(poseDataMap) {
 }
 
 // ============================================================================
-// 3. Canvas 繪圖與視覺化渲染
+// 3. Canvas 繪圖與視覺化渲染 (已調細線條)
 // ============================================================================
 
-// 計算影片內容在畫面中實際佔用的寬高與座標，確保標記層 (Canvas) 與影片完美對齊
 function getVideoContentRect() {
   const stageRect = videoStage.getBoundingClientRect();
   const videoRect = videoPreview.getBoundingClientRect();
@@ -172,14 +166,12 @@ function getVideoContentRect() {
   return { left: videoRect.left + (videoRect.width - width) / 2, top: videoRect.top, width, height: videoRect.height };
 }
 
-// 繪製骨架的入口包裝函式
 function drawPose(landmarks) {
   return drawSelectedPose(selectPosePoints(landmarks));
 }
 
-// 【科幻外骨骼樣式更新】繪製 5 點動力鏈與科技感 HUD 標籤
+// 【精緻外骨骼樣式】線條已適度調細，避免過度遮擋肢體
 function drawSelectedPose(points) {
-  // 解除 Canvas 隱藏狀態並設定適配高解析度螢幕的尺寸
   poseCanvas.hidden = false;
   const stage = $("#videoStage");
   const stageRect = stage.getBoundingClientRect();
@@ -202,7 +194,6 @@ function drawSelectedPose(points) {
     throw new Error("肩、髖、膝、踝與腳尖未全部清楚入鏡");
   }
   
-  // 將 0~1 的歸一化座標轉換為 Canvas 上的實際像素座標
   const toCanvasPoint = (point) => ({
     x: (videoRect.left - stageRect.left) + point.x * videoRect.width,
     y: (videoRect.top - stageRect.top) + point.y * videoRect.height
@@ -213,112 +204,99 @@ function drawSelectedPose(points) {
   poseContext.lineCap = "round";
   poseContext.lineJoin = "round";
   
-  // 1. 繪製外骨骼連桿 (三層疊加，製造霓虹與機甲立體感)
+  // 1. 繪製外骨骼連桿 (已大幅調細並保持科技感光暈)
   canvasChain.slice(0, -1).forEach((point, index) => {
     const next = canvasChain[index + 1];
     
-    // 底層：霓虹外發光 (光暈)
+    // 底層：霓虹外發光
     poseContext.beginPath();
     poseContext.moveTo(point.x, point.y);
     poseContext.lineTo(next.x, next.y);
-    poseContext.strokeStyle = "rgba(0, 255, 255, 0.35)"; // 科技青色
-    poseContext.lineWidth = Math.max(16, stageRect.width / 35);
+    poseContext.strokeStyle = "rgba(0, 255, 255, 0.35)";
+    poseContext.lineWidth = Math.max(8, stageRect.width / 80);
     poseContext.shadowColor = "#00ffff";
-    poseContext.shadowBlur = 15;
+    poseContext.shadowBlur = 10;
     poseContext.stroke();
     
-    // 中層：深色金屬機甲主體
+    // 中層：金屬機甲主體
     poseContext.shadowBlur = 0;
     poseContext.beginPath();
     poseContext.moveTo(point.x, point.y);
     poseContext.lineTo(next.x, next.y);
     poseContext.strokeStyle = "rgba(10, 25, 30, 0.9)";
-    poseContext.lineWidth = Math.max(8, stageRect.width / 65);
+    poseContext.lineWidth = Math.max(4, stageRect.width / 130);
     poseContext.stroke();
     
-    // 內層：高亮能量流線
+    // 內層：高亮能量線
     poseContext.beginPath();
     poseContext.moveTo(point.x, point.y);
     poseContext.lineTo(next.x, next.y);
     poseContext.strokeStyle = "#00ffff";
-    poseContext.lineWidth = Math.max(2, stageRect.width / 180);
+    poseContext.lineWidth = Math.max(1.5, stageRect.width / 250);
     poseContext.stroke();
   });
   
   // 2. 繪製關節動力節點與 HUD 標籤
   canvasChain.forEach((point, index) => {
     const { x, y } = point;
-    const baseRadius = Math.max(6, stageRect.width / 95);
+    const baseRadius = Math.max(4, stageRect.width / 130);
     
-    // 關節外環 (深色底＋青色邊框)
     poseContext.beginPath();
-    poseContext.arc(x, y, baseRadius + 3, 0, Math.PI * 2);
+    poseContext.arc(x, y, baseRadius + 2, 0, Math.PI * 2);
     poseContext.fillStyle = "rgba(10, 25, 30, 0.95)";
     poseContext.strokeStyle = "#00ffff";
-    poseContext.lineWidth = 2;
+    poseContext.lineWidth = 1.5;
     poseContext.shadowColor = "#00ffff";
-    poseContext.shadowBlur = 10;
+    poseContext.shadowBlur = 6;
     poseContext.fill();
     poseContext.stroke();
     
-    // 關節內核 (手動標記呈橘色，AI 標記呈高亮白)
     poseContext.shadowBlur = 0;
     poseContext.beginPath();
-    poseContext.arc(x, y, Math.max(2, baseRadius - 2), 0, Math.PI * 2);
+    poseContext.arc(x, y, Math.max(1.5, baseRadius - 1.5), 0, Math.PI * 2);
     poseContext.fillStyle = chain[index]?.isManual ? "#f59e0b" : "#ffffff";
     poseContext.fill();
     
-    // 繪製 HUD 數據標籤背景
-    const fontSize = Math.max(12, stageRect.width / 50);
+    const fontSize = Math.max(12, stageRect.width / 55);
     poseContext.font = `600 ${fontSize}px sans-serif`;
     const textWidth = poseContext.measureText(pointNames[index]).width;
     
-    // 半透明黑底
     poseContext.fillStyle = "rgba(0, 15, 20, 0.75)";
-    poseContext.fillRect(x + 14, y - fontSize - 6, textWidth + 12, fontSize + 10);
+    poseContext.fillRect(x + 10, y - fontSize - 4, textWidth + 10, fontSize + 8);
     
-    // 科技裝飾邊線 (左側亮條)
     poseContext.fillStyle = "#00ffff";
-    poseContext.fillRect(x + 14, y - fontSize - 6, 3, fontSize + 10);
+    poseContext.fillRect(x + 10, y - fontSize - 4, 3, fontSize + 8);
     
-    // 繪製文字
     poseContext.fillStyle = "#00ffff";
-    poseContext.fillText(pointNames[index], x + 21, y - 3);
+    poseContext.fillText(pointNames[index], x + 16, y - 2);
   });
   
   return points;
 }
 
-// 依據目前時間軸的影格，提取出已儲存的姿態數據並進行渲染更新
 function renderStoredPose(frame) {
   let renderedFrame = frame;
   let points = poseData.get(frame);
-  
-  // 若該幀沒有資料，但屬於分析範圍內，則尋找最近的一幀資料來顯示
   if (!points && poseAnalysisRange && frame >= poseAnalysisRange.start && frame <= poseAnalysisRange.end && poseData.size) {
     renderedFrame = [...poseData.keys()].reduce((nearest, candidate) => (
       Math.abs(candidate - frame) < Math.abs(nearest - frame) ? candidate : nearest
     ));
     points = poseData.get(renderedFrame);
   }
-  
   if (!points) {
     clearPoseOverlay();
     return;
   }
-  
   drawSelectedPose(points);
   showAngles([points.shoulder, points.hip, points.knee, points.ankle, points.toe], `AI 骨骼標記 · Frame ${renderedFrame}`);
 }
 
-// 清除 Canvas 上的標記並隱藏資訊面板
 function clearPoseOverlay() {
   poseContext.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
   poseCanvas.hidden = true;
   angleReadout.hidden = true;
 }
 
-// 手動標記模式下的基礎紅點連線繪製函式 (保留原本樣式以區別手動與 AI)
 function drawPointChain(chain, label = "手動標記") {
   const stageRect = videoStage.getBoundingClientRect();
   const videoRect = getVideoContentRect();
@@ -366,7 +344,6 @@ function drawPointChain(chain, label = "手動標記") {
   $("#poseFrameLabel").textContent = `${label}目前影格 · ${formatTime(videoPreview.currentTime)}`;
 }
 
-// 根據給定的五個座標點，計算並更新 UI 上顯示的關節夾角
 function showAngles(points, statusText) {
   const hip = angleAt(points[1], points[0], points[2]);
   const knee = angleAt(points[2], points[1], points[3]);
@@ -383,7 +360,6 @@ function showAngles(points, statusText) {
 // 4. 手動標記功能
 // ============================================================================
 
-// 啟動手動關節標記模式：暫停影片、清空畫布並改變游標為十字
 function startManualPose() {
   manualPoseActive = true;
   manualPoints = [];
@@ -397,10 +373,9 @@ function startManualPose() {
   analysisStatus.textContent = "請依序點擊影片中的：肩 → 髖 → 膝 → 踝 → 腳尖。";
 }
 
-// 接收使用者的點擊事件，記錄相對於影片的歸一化座標 (0~1)
 function recordManualPoint(event) {
   if (!manualPoseActive) return;
-  event.preventDefault(); // 防止點擊觸發原生影片播放
+  event.preventDefault();
   const videoRect = getVideoContentRect();
   const x = (event.clientX - videoRect.left) / videoRect.width;
   const y = (event.clientY - videoRect.top) / videoRect.height;
@@ -410,20 +385,17 @@ function recordManualPoint(event) {
   drawPointChain(manualPoints);
   
   if (manualPoints.length === 5) {
-    // 當五點點擊完畢，結束手動模式並計算角度
     manualPoseActive = false;
     poseCanvas.style.pointerEvents = "none";
     poseCanvas.style.cursor = "default";
     manualPoseButton.classList.remove("active");
     showAngles(manualPoints, "手動骨骼標記完成：已標記肩、髖、膝、踝與腳尖。");
   } else {
-    // 提示下一個需要點擊的關節名稱
     const next = ["肩", "髖", "膝", "踝", "腳尖"][manualPoints.length];
     analysisStatus.textContent = `已標記 ${manualPoints.length}/5，下一個請點擊：${next}。`;
   }
 }
 
-// 綁定手動標記的點擊事件防護，確保點擊到任何層 (Canvas 或 Video) 都能記錄或攔截
 videoStage.addEventListener("click", (event) => {
   if (!manualPoseActive || event.target === poseCanvas) return;
   event.preventDefault();
@@ -451,11 +423,9 @@ videoPreview.addEventListener("play", () => {
 // 5. MediaPipe AI 模型載入與分析流程
 // ============================================================================
 
-// 動態載入並建立 MediaPipe Pose 模型實例
 async function getPoseLandmarker() {
-  if (poseLandmarker) return poseLandmarker; // 已載入則直接回傳
+  if (poseLandmarker) return poseLandmarker;
   if (poseLoading) {
-    // 若其他事件正在載入中，則等待其完成
     while (poseLoading) await new Promise((resolve) => setTimeout(resolve, 100));
     return poseLandmarker;
   }
@@ -469,7 +439,7 @@ async function getPoseLandmarker() {
       baseOptions: {
         modelAssetPath: new URL("./models/pose_landmarker_lite.task", window.location.href).href
       },
-      runningMode: "VIDEO", // 設定為影片連續處理模式
+      runningMode: "VIDEO",
       numPoses: 1,
       minPoseDetectionConfidence: .3,
       minPosePresenceConfidence: .3,
@@ -481,7 +451,6 @@ async function getPoseLandmarker() {
   }
 }
 
-// 強制等待影片載入並跳轉至精確的目標秒數，以確保截取到正確的影格畫面
 function waitForSeek(video, targetTime) {
   if (Math.abs(video.currentTime - targetTime) < 0.0005 && video.readyState >= 2) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -507,7 +476,6 @@ function waitForSeek(video, targetTime) {
   });
 }
 
-// 鎖定介面：在 AI 執行分析時停用所有按鈕，避免使用者誤觸干擾流程
 function setAnalysisLock(locked) {
   [frameRange, clipRange, $("#previousFrame"), $("#nextFrame"), $("#playPause"), $("#btnMarkS"), $("#takeoffButton"), $("#landingButton"), $("#btnMarkF"), manualPoseButton].forEach((element) => {
     if (element) element.disabled = locked;
@@ -516,7 +484,6 @@ function setAnalysisLock(locked) {
   autoPoseButton.textContent = locked ? "分析中…" : "✦ AI 骨骼分析";
 }
 
-// 核心流程：呼叫 AI 模型對影片進行逐格掃描，並執行運動學分期
 async function analyzeVideoPose() {
   if (!videoUrl || videoPreview.readyState < 2) {
     analysisStatus.className = "analysis-status error";
@@ -531,14 +498,12 @@ async function analyzeVideoPose() {
     videoPreview.pause();
     const fps = Number(fpsSelect.value);
     
-    // 如果尚未標記 T/L，則自動將範圍擴充為 0 到目前設定的結束點
     const analysisStart = takeoffFrame !== null ? takeoffFrame : 0;
     const analysisEnd = landingFrame !== null ? landingFrame : Number(clipRange.value || totalFrames);
     
     if (analysisEnd <= analysisStart) throw new Error("設定的分析範圍無效，請確認剪輯範圍。");
     
     const rawPoseData = new Map();
-    // 逐格移動時間軸並餵給 MediaPipe 辨識
     for (let frame = analysisStart; frame <= analysisEnd; frame += 1) {
       const time = frame / fps;
       await waitForSeek(videoPreview, time);
@@ -548,13 +513,11 @@ async function analyzeVideoPose() {
       const landmarks = result?.landmarks?.[0];
       if (landmarks) {
         const points = selectPosePoints(landmarks);
-        // 確認 5 個主要關節是否都在畫面範圍內
         const visible = [points.shoulder, points.hip, points.knee, points.ankle, points.toe]
           .every((point) => point && (point.visibility ?? 1) >= .2);
         if (visible) rawPoseData.set(frame, points);
       }
       
-      // 更新進度條文字，避免頻繁渲染卡頓，每 4 幀更新一次
       if ((frame - analysisStart) % 4 === 0 || frame === analysisEnd) {
         const progress = Math.round(((frame - analysisStart) / (analysisEnd - analysisStart)) * 100);
         analysisStatus.className = "analysis-status";
@@ -563,17 +526,14 @@ async function analyzeVideoPose() {
       }
     }
     
-    // 進行平滑化去抖動
     poseData = smoothPoseData(rawPoseData);
     if (!poseData.size) throw new Error("在指定範圍內找不到清楚的人體姿態");
 
-    // 若使用者未手動給定起跳與落地，則交由 AI 自動運算階段
     if (takeoffFrame === null || landingFrame === null) {
       analysisStatus.textContent = "正在透過位移特徵計算起跳與落地點...";
       const phases = autoDetectJumpPhases(poseData);
       
       if (phases && phases.autoT && phases.autoL) {
-        // 將 AI 偵測的關鍵影格覆寫回全域變數
         window.startFrame = phases.autoS;
         window.takeoffFrame = phases.autoT;
         window.landingFrame = phases.autoL;
@@ -584,7 +544,6 @@ async function analyzeVideoPose() {
       }
     }
 
-    // 完成後回到起始影格，準備讓使用者檢視結果
     poseAnalysisRange = { start: analysisStart, end: analysisEnd };
     const firstFrame = window.takeoffFrame !== null ? window.takeoffFrame : poseData.keys().next().value;
     frameRange.value = String(firstFrame);
@@ -593,23 +552,143 @@ async function analyzeVideoPose() {
     
     analysisStatus.className = "analysis-status success";
     analysisStatus.textContent = `AI 分析完成：已自動標記跳躍分期，可拖曳時間軸檢視骨骼與角度。`;
+    
+    // 分析完成後自動繪製關節角度曲線圖
+    renderKinematicsChart();
+
   } catch (error) {
     console.error("Pose analysis failed:", error);
     analysisStatus.className = "analysis-status error";
     const detail = error?.message ? `（${error.message.slice(0, 90)}）` : "";
     analysisStatus.textContent = `AI 骨骼分析失敗${detail} 可改用「手動標記關節」完成紅點與角度分析。`;
   } finally {
-    // 釋放介面鎖定
     isAnalyzing = false;
     setAnalysisLock(false);
   }
 }
 
 // ============================================================================
-// 6. UI 互動與物理計算邏輯
+// 6. UI 互動、物理計算與圖表繪製 (參考 Tougon 設計)
 // ============================================================================
 
-// 時間格式化工具 (輸出如 00:01.234)
+// 計算生物力學屈曲角度 (以站直為 0 度基準)
+function calculateFlexionAngles(points) {
+  const hipAngle = angleAt(points.hip, points.shoulder, points.knee);
+  const kneeAngle = angleAt(points.knee, points.hip, points.ankle);
+  const ankleAngle = angleAt(points.ankle, points.knee, points.toe);
+  return {
+    hip: 180 - hipAngle,
+    knee: 180 - kneeAngle,
+    ankle: 90 - ankleAngle
+  };
+}
+
+// 繪製關節角度與時間關係折線圖 (需在 HTML 中引入 Chart.js)
+function renderKinematicsChart() {
+  if (!poseData.size || !poseAnalysisRange) return;
+  
+  const chartContainer = document.getElementById("chartSection");
+  if (chartContainer) chartContainer.style.display = "block";
+  
+  const canvasEl = document.getElementById("kinematicsChart");
+  if (!canvasEl) return;
+  
+  const ctx = canvasEl.getContext("2d");
+  const fps = Number(fpsSelect.value);
+  const labels = [];
+  const dataHip = [];
+  const dataKnee = [];
+  const dataAnkle = [];
+  
+  for (let frame = poseAnalysisRange.start; frame <= poseAnalysisRange.end; frame++) {
+    const points = poseData.get(frame);
+    if (points) {
+      const angles = calculateFlexionAngles(points);
+      labels.push((frame / fps).toFixed(3));
+      dataHip.push(angles.hip);
+      dataKnee.push(angles.knee);
+      dataAnkle.push(angles.ankle);
+    }
+  }
+
+  if (kinematicsChartInstance) {
+    kinematicsChartInstance.destroy();
+  }
+
+  kinematicsChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: '髖關節屈曲 (°)',
+          data: dataHip,
+          borderColor: '#2c684f',
+          backgroundColor: '#2c684f',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHitRadius: 10,
+          tension: 0.3
+        },
+        {
+          label: '膝關節屈曲 (°)',
+          data: dataKnee,
+          borderColor: '#00ffff',
+          backgroundColor: '#00ffff',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHitRadius: 10,
+          tension: 0.3
+        },
+        {
+          label: '踝關節背屈/蹠屈 (°)',
+          data: dataAnkle,
+          borderColor: '#f59e0b',
+          backgroundColor: '#f59e0b',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHitRadius: 10,
+          tension: 0.3
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            title: (context) => `時間: ${context[0].label} s`
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: '時間 (秒)' },
+          ticks: { maxTicksLimit: 10 }
+        },
+        y: {
+          title: { display: true, text: '角度 (°)' }
+        }
+      },
+      // 點擊圖表可直接跳轉至對應影格與影片時間
+      onClick: (event, elements, chart) => {
+        if (elements.length > 0) {
+          const dataIndex = elements[0].index;
+          const targetTime = parseFloat(chart.data.labels[dataIndex]);
+          videoPreview.currentTime = targetTime;
+          frameRange.value = Math.round(targetTime * fps);
+          document.querySelector("#analyzer").scrollIntoView({ behavior: "smooth" });
+        }
+      }
+    }
+  });
+}
+
 const formatTime = (seconds) => {
   if (!Number.isFinite(seconds)) return "00:00.000";
   const minutes = Math.floor(seconds / 60);
@@ -619,14 +698,12 @@ const formatTime = (seconds) => {
 
 const getCurrentFrame = () => Number(frameRange.value || 0);
 
-// 切換整套 App 的啟用狀態 (對應安全須知同意視窗)
 function setAppEnabled(enabled) {
   [videoInput, $("#testType"), fpsSelect, $("#uploadButton"), $("#heroUpload")].forEach((element) => {
     if (element) element.disabled = !enabled;
   });
 }
 
-// 更新畫面下方時間軸的文字顯示 (S, T, L, F 與當前 Frame)
 function updateReadouts() {
   const fps = Number(fpsSelect.value);
   const current = getCurrentFrame();
@@ -638,14 +715,12 @@ function updateReadouts() {
   $("#videoTime").textContent = formatTime(videoPreview.currentTime || current / fps);
 }
 
-// 根據滯空時間公式 h = g * t^2 / 8 計算高度，並更新至結果面板
 function calculateResult() {
   if (takeoffFrame === null || landingFrame === null) {
     analysisStatus.className = "analysis-status";
     analysisStatus.textContent = "請在逐格時間軸上標記 T 腳尖離地與 L 首次落地，結果會自動更新。";
     return;
   }
-  // 防止落地時間早於起跳時間的錯誤操作
   if (landingFrame <= takeoffFrame) {
     analysisStatus.className = "analysis-status error";
     analysisStatus.textContent = "L 必須晚於 T，請把時間軸移到落地影格後再按下 L。";
@@ -671,7 +746,6 @@ function calculateResult() {
   analysisStatus.textContent = `分析完成：T ${formatTime(takeoffFrame / Number(fpsSelect.value))} → L ${formatTime(landingFrame / Number(fpsSelect.value))}，結果已更新。`;
 }
 
-// 驗證 S, T, L, F 的時間順序是否合理 (必須遞增)
 function validatePhaseMarkers() {
   const markers = [
     ["S", startFrame],
@@ -690,7 +764,6 @@ function validatePhaseMarkers() {
   return true;
 }
 
-// 處理使用者點擊標記按鈕 (或按鍵) 後的邏輯分配
 function markFrame(type) {
   if (!videoUrl) return;
   if (type === "start") startFrame = getCurrentFrame();
@@ -703,13 +776,11 @@ function markFrame(type) {
   
   if (!validatePhaseMarkers()) return;
   
-  // 若 T 和 L 都標記完畢且合法，自動觸發 AI 分析
   if (takeoffFrame !== null && landingFrame !== null && landingFrame > takeoffFrame) {
     analyzeVideoPose();
   }
 }
 
-// 當影片載入完成，解鎖時間軸滑桿與控制按鈕
 function enableVideoTools() {
   [frameRange, clipRange, $("#previousFrame"), $("#nextFrame"), $("#playPause"), $("#btnMarkS"), $("#takeoffButton"), $("#landingButton"), $("#btnMarkF"), autoPoseButton, manualPoseButton].forEach((el) => { el.disabled = false; });
   frameRange.max = String(totalFrames);
@@ -718,7 +789,6 @@ function enableVideoTools() {
   updateReadouts();
 }
 
-// 處理使用者上傳影片：建立 Blob URL、清空舊紀錄並渲染預覽畫面
 function loadVideo(file) {
   if (!file) return;
   if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -746,7 +816,6 @@ function loadVideo(file) {
   }, { once: true });
 }
 
-// 將記憶體中的試跳次數與高度資料，渲染成右側面板的列表 HTML
 function renderAttempts() {
   if (!attempts.length) {
     attemptList.innerHTML = '<div class="attempt-empty">完成一次標記後，試跳結果會顯示在這裡。</div>';
@@ -763,19 +832,16 @@ function renderAttempts() {
 // 7. 事件監聽與綁定區
 // ============================================================================
 
-// 處理安全確認與說明對話框事件
 safetyConfirm.addEventListener("change", () => { enterApp.disabled = !safetyConfirm.checked; });
 enterApp.addEventListener("click", () => { safetyModal.classList.add("hidden"); setAppEnabled(true); });
 $("#openGuide").addEventListener("click", () => guideModal.classList.remove("hidden"));
 $("#closeGuide").addEventListener("click", () => guideModal.classList.add("hidden"));
 guideModal.addEventListener("click", (event) => { if (event.target === guideModal) guideModal.classList.add("hidden"); });
 
-// 處理檔案上傳按鈕觸發事件
 $("#uploadButton").addEventListener("click", () => videoInput.click());
 $("#heroUpload").addEventListener("click", () => { document.querySelector("#analyzer").scrollIntoView({ behavior: "smooth" }); videoInput.click(); });
 videoInput.addEventListener("change", (event) => loadVideo(event.target.files[0]));
 
-// 監聽時間軸拖曳事件，同步影片時間與顯示結果
 frameRange.addEventListener("input", () => {
   const frame = getCurrentFrame();
   if (videoPreview.duration) videoPreview.currentTime = frame / Number(fpsSelect.value);
@@ -786,7 +852,6 @@ clipRange.addEventListener("input", () => {
   if (videoPreview.duration) videoPreview.currentTime = Number(clipRange.value) / Number(fpsSelect.value); 
 });
 
-// 當使用者切換 FPS 時，重新計算影格範圍與分析結果
 fpsSelect.addEventListener("change", () => {
   if (videoUrl) {
     totalFrames = Math.max(1, Math.round((videoPreview.duration || 0) * Number(fpsSelect.value)));
@@ -797,7 +862,6 @@ fpsSelect.addEventListener("change", () => {
   }
 });
 
-// 監聽影片原生播放時間，並將滑桿與介面同步移動
 videoPreview.addEventListener("timeupdate", () => {
   if (!videoPreview.seeking) {
     const currentFrame = Math.round(videoPreview.currentTime * Number(fpsSelect.value));
@@ -807,7 +871,6 @@ videoPreview.addEventListener("timeupdate", () => {
   }
 });
 
-// 各類播放控制與工具按鈕綁定
 $("#previousFrame").addEventListener("click", () => { frameRange.value = String(Math.max(0, getCurrentFrame() - 1)); frameRange.dispatchEvent(new Event("input")); });
 $("#nextFrame").addEventListener("click", () => { frameRange.value = String(Math.min(totalFrames, getCurrentFrame() + 1)); frameRange.dispatchEvent(new Event("input")); });
 $("#playPause").addEventListener("click", () => {
@@ -815,7 +878,6 @@ $("#playPause").addEventListener("click", () => {
   else { videoPreview.pause(); $("#playPause").innerHTML = "▶ <span>播放</span>"; }
 });
 
-// 標記按鈕與 AI 執行按鈕
 $("#takeoffButton").addEventListener("click", () => markFrame("takeoff"));
 $("#landingButton").addEventListener("click", () => markFrame("landing"));
 $("#btnMarkS").addEventListener("click", () => markFrame("start"));
@@ -823,7 +885,6 @@ $("#btnMarkF").addEventListener("click", () => markFrame("finish"));
 autoPoseButton.addEventListener("click", analyzeVideoPose);
 manualPoseButton.addEventListener("click", startManualPose);
 
-// 儲存試跳結果至列表 (最多保留 3 筆)
 saveAttempt.addEventListener("click", () => {
   if (takeoffFrame === null || landingFrame === null) return;
   const flight = (landingFrame - takeoffFrame) / Number(fpsSelect.value);
@@ -833,7 +894,6 @@ saveAttempt.addEventListener("click", () => {
   renderAttempts();
 });
 
-// 複製結果至系統剪貼簿功能
 $("#copyResult").addEventListener("click", async () => {
   const text = `JumpLab 分析結果\nFlight Time: ${takeoffFrame !== null && landingFrame !== null ? ((landingFrame - takeoffFrame) / Number(fpsSelect.value)).toFixed(3) : "—"} s\nJump Height: ${resultHeight.textContent.trim()}`;
   try {
@@ -843,10 +903,7 @@ $("#copyResult").addEventListener("click", async () => {
   } catch { window.alert(text); }
 });
 
-// 列印或匯出 PDF
 $("#printReport").addEventListener("click", () => window.print());
 
-// 暫時略過安全確認視窗，直接開放分析工具測試。
-// 保留 modal 與原本的確認事件，之後若恢復正式流程只需改回 false。
 safetyModal.classList.add("hidden");
 setAppEnabled(true);
