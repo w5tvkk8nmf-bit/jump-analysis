@@ -433,6 +433,7 @@ function setAnalysisLock(locked) {
 }
 
 async function analyzeVideoPose() {
+ async function analyzeVideoPose() {
   if (!videoUrl || videoPreview.readyState < 2) {
     analysisStatus.className = "analysis-status error";
     analysisStatus.textContent = "請先匯入並載入影片，再執行骨骼分析。";
@@ -445,12 +446,15 @@ async function analyzeVideoPose() {
     const landmarker = await getPoseLandmarker();
     videoPreview.pause();
     const fps = Number(fpsSelect.value);
-    const startFrame = Math.max(0, takeoffFrame ?? 0);
-    const requestedEnd = landingFrame ?? Number(clipRange.value || totalFrames);
-    const endFrame = Math.min(totalFrames, Math.max(startFrame, requestedEnd));
-    if (endFrame <= startFrame) throw new Error("請先標記 T 腳尖離地與 L 首次落地，或設定有效的分析範圍");
+    
+    // 修改：如果尚未標記 T/L，則自動分析 0 到目前設定的剪輯範圍
+    const analysisStart = takeoffFrame !== null ? takeoffFrame : 0;
+    const analysisEnd = landingFrame !== null ? landingFrame : Number(clipRange.value || totalFrames);
+    
+    if (analysisEnd <= analysisStart) throw new Error("設定的分析範圍無效，請確認剪輯範圍。");
+    
     const rawPoseData = new Map();
-    for (let frame = startFrame; frame <= endFrame; frame += 1) {
+    for (let frame = analysisStart; frame <= analysisEnd; frame += 1) {
       const time = frame / fps;
       await waitForSeek(videoPreview, time);
       const timestamp = Math.max(Math.round(time * 1000), lastPoseTimestamp + 1);
@@ -463,22 +467,42 @@ async function analyzeVideoPose() {
           .every((point) => point && (point.visibility ?? 1) >= .2);
         if (visible) rawPoseData.set(frame, points);
       }
-      if ((frame - startFrame) % 4 === 0 || frame === endFrame) {
-        const progress = Math.round(((frame - startFrame) / (endFrame - startFrame)) * 100);
+      if ((frame - analysisStart) % 4 === 0 || frame === analysisEnd) {
+        const progress = Math.round(((frame - analysisStart) / (analysisEnd - analysisStart)) * 100);
         analysisStatus.className = "analysis-status";
-        analysisStatus.textContent = `AI 逐格分析中… ${progress}%（Frame ${frame}/${endFrame}）`;
+        analysisStatus.textContent = `AI 逐格分析中… ${progress}%（Frame ${frame}/${analysisEnd}）`;
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
+    
     poseData = smoothPoseData(rawPoseData);
     if (!poseData.size) throw new Error("在指定範圍內找不到清楚的人體姿態");
-    poseAnalysisRange = { start: startFrame, end: endFrame };
-    const firstFrame = poseData.keys().next().value;
+
+    // 新增：如果使用者沒有手動標記，由系統進行運動學分期
+    if (takeoffFrame === null || landingFrame === null) {
+      analysisStatus.textContent = "正在透過位移特徵計算起跳與落地點...";
+      const phases = autoDetectJumpPhases(poseData);
+      
+      if (phases && phases.autoT && phases.autoL) {
+        // 將全域變數覆寫為 AI 偵測的結果
+        window.startFrame = phases.autoS;
+        window.takeoffFrame = phases.autoT;
+        window.landingFrame = phases.autoL;
+        updateReadouts();
+        calculateResult();
+      } else {
+        throw new Error("自動分期失敗：請確認影片包含完整的站立、下蹲與落地動作，或改用手動標記 S/T/L。");
+      }
+    }
+
+    poseAnalysisRange = { start: analysisStart, end: analysisEnd };
+    const firstFrame = window.takeoffFrame !== null ? window.takeoffFrame : poseData.keys().next().value;
     frameRange.value = String(firstFrame);
-    videoPreview.currentTime = startFrame / fps;
+    videoPreview.currentTime = firstFrame / fps;
     renderStoredPose(firstFrame);
+    
     analysisStatus.className = "analysis-status success";
-    analysisStatus.textContent = `AI 分析完成：已處理 ${poseData.size} 個影格，可拖曳時間軸檢視骨骼與角度。`;
+    analysisStatus.textContent = `AI 分析完成：已自動標記跳躍分期，可拖曳時間軸檢視骨骼與角度。`;
   } catch (error) {
     console.error("Pose analysis failed:", error);
     analysisStatus.className = "analysis-status error";
@@ -488,6 +512,8 @@ async function analyzeVideoPose() {
     isAnalyzing = false;
     setAnalysisLock(false);
   }
+}
+
 }
 
 const formatTime = (seconds) => {
