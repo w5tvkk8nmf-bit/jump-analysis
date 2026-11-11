@@ -526,7 +526,7 @@ async function analyzeVideoPose() {
       }
     }
     
-    poseData = smoothPoseData(rawPoseData);
+    poseData = smoothPoseData(rawPoseData,3);
     if (!poseData.size) throw new Error("在指定範圍內找不到清楚的人體姿態");
 
     if (takeoffFrame === null || landingFrame === null) {
