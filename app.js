@@ -46,19 +46,11 @@ let lastPoseTimestamp = 0;
 let poseData = new Map();
 let poseAnalysisRange = null;
 let isAnalyzing = false;
-let manualPoseActive = false;
-let manualPoints = [];
 let kinematicsChartInstance = null;
 
 // ============================================================================
-// 2. 核心運算與自動分期演算法 (支援 S, T, L, F 全自動判斷)
+// 2. 核心運算與自動分期演算法
 // ============================================================================
-
-const POSE_CONNECTIONS = [
-  [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24],
-  [23, 25], [25, 27], [24, 26], [26, 28], [27, 29], [28, 30],
-  [27, 31], [28, 32], [11, 12], [23, 24]
-];
 
 function angleAt(vertex, pointA, pointB) {
   const a = Math.atan2(pointA.y - vertex.y, pointA.x - vertex.x);
@@ -151,7 +143,7 @@ function autoDetectJumpPhases(poseDataMap) {
 }
 
 // ============================================================================
-// 3. Canvas 繪圖與視覺化渲染
+// 3. 繪圖與骨骼標記渲染
 // ============================================================================
 
 function getVideoContentRect() {
@@ -203,7 +195,6 @@ function drawSelectedPose(points) {
   
   canvasChain.slice(0, -1).forEach((point, index) => {
     const next = canvasChain[index + 1];
-    
     poseContext.beginPath();
     poseContext.moveTo(point.x, point.y);
     poseContext.lineTo(next.x, next.y);
@@ -214,13 +205,6 @@ function drawSelectedPose(points) {
     poseContext.stroke();
     
     poseContext.shadowBlur = 0;
-    poseContext.beginPath();
-    poseContext.moveTo(point.x, point.y);
-    poseContext.lineTo(next.x, next.y);
-    poseContext.strokeStyle = "rgba(10, 25, 30, 0.9)";
-    poseContext.lineWidth = Math.max(4, stageRect.width / 130);
-    poseContext.stroke();
-    
     poseContext.beginPath();
     poseContext.moveTo(point.x, point.y);
     poseContext.lineTo(next.x, next.y);
@@ -238,16 +222,8 @@ function drawSelectedPose(points) {
     poseContext.fillStyle = "rgba(10, 25, 30, 0.95)";
     poseContext.strokeStyle = "#00ffff";
     poseContext.lineWidth = 1.5;
-    poseContext.shadowColor = "#00ffff";
-    poseContext.shadowBlur = 6;
     poseContext.fill();
     poseContext.stroke();
-    
-    poseContext.shadowBlur = 0;
-    poseContext.beginPath();
-    poseContext.arc(x, y, Math.max(1.5, baseRadius - 1.5), 0, Math.PI * 2);
-    poseContext.fillStyle = chain[index]?.isManual ? "#f59e0b" : "#ffffff";
-    poseContext.fill();
     
     const fontSize = Math.max(12, stageRect.width / 55);
     poseContext.font = `600 ${fontSize}px sans-serif`;
@@ -255,10 +231,6 @@ function drawSelectedPose(points) {
     
     poseContext.fillStyle = "rgba(0, 15, 20, 0.75)";
     poseContext.fillRect(x + 10, y - fontSize - 4, textWidth + 10, fontSize + 8);
-    
-    poseContext.fillStyle = "#00ffff";
-    poseContext.fillRect(x + 10, y - fontSize - 4, 3, fontSize + 8);
-    
     poseContext.fillStyle = "#00ffff";
     poseContext.fillText(pointNames[index], x + 16, y - 2);
   });
@@ -302,7 +274,7 @@ function showAngles(points, statusText) {
 }
 
 // ============================================================================
-// 4. MediaPipe AI 模型載入與影片處理
+// 4. MediaPipe 模型與影片載入核心
 // ============================================================================
 
 async function getPoseLandmarker() {
@@ -367,14 +339,10 @@ function setAnalysisLock(locked) {
 
 async function analyzeVideoPose() {
   if (!videoUrl || videoPreview.readyState < 2) return;
-  if (isAnalyzing) return;
-  isAnalyzing = true;
-  setAnalysisLock(true);
   try {
     const landmarker = await getPoseLandmarker();
     videoPreview.pause();
     const fps = Number(fpsSelect.value);
-    
     const analysisStart = 0;
     const analysisEnd = totalFrames;
     
@@ -415,119 +383,23 @@ async function analyzeVideoPose() {
     }
 
     poseAnalysisRange = { start: analysisStart, end: analysisEnd };
-    
     frameRange.value = "0";
     videoPreview.currentTime = 0;
     renderStoredPose(0);
     
     analysisStatus.className = "analysis-status success";
-    analysisStatus.textContent = `AI 分析完成：已自動標記 S / T / L / F，並產出運動學曲線圖。`;
-    
-    renderKinematicsChart();
+    analysisStatus.textContent = `AI 分析完成：已自動標記 S / T / L / F。`;
 
   } catch (error) {
     console.error("Pose analysis failed:", error);
     analysisStatus.className = "analysis-status error";
     analysisStatus.textContent = `AI 自動分析失敗，請確認影片包含完整全身入鏡。`;
-  } finally {
-    isAnalyzing = false;
-    setAnalysisLock(false);
   }
-}
-
-// ============================================================================
-// 5. 圖表渲染與 UI 互動邏輯
-// ============================================================================
-
-function calculateFlexionAngles(points) {
-  const hipAngle = angleAt(points.hip, points.shoulder, points.knee);
-  const kneeAngle = angleAt(points.knee, points.hip, points.ankle);
-  const ankleAngle = angleAt(points.ankle, points.knee, points.toe);
-  return {
-    hip: 180 - hipAngle,
-    knee: 180 - kneeAngle,
-    ankle: 90 - ankleAngle
-  };
-}
-
-function renderKinematicsChart() {
-  if (!poseData.size || !poseAnalysisRange) return;
-  
-  const chartContainer = document.getElementById("chartSection");
-  if (chartContainer) chartContainer.style.display = "block";
-  
-  const canvasEl = document.getElementById("kinematicsChart");
-  if (!canvasEl) return;
-  
-  const ctx = canvasEl.getContext("2d");
-  const fps = Number(fpsSelect.value);
-  const labels = [];
-  const dataHip = [];
-  const dataKnee = [];
-  const dataAnkle = [];
-  
-  for (let frame = poseAnalysisRange.start; frame <= poseAnalysisRange.end; frame++) {
-    const points = poseData.get(frame);
-    if (points) {
-      const angles = calculateFlexionAngles(points);
-      labels.push((frame / fps).toFixed(3));
-      dataHip.push(angles.hip);
-      dataKnee.push(angles.knee);
-      dataAnkle.push(angles.ankle);
-    }
-  }
-
-  if (kinematicsChartInstance) kinematicsChartInstance.destroy();
-
-  kinematicsChartInstance = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: [
-        { label: '髖關節屈曲 (°)', data: dataHip, borderColor: '#2c684f', borderWidth: 2, pointRadius: 0, tension: 0.3 },
-        { label: '膝關節屈曲 (°)', data: dataKnee, borderColor: '#00ffff', borderWidth: 2, pointRadius: 0, tension: 0.3 },
-        { label: '踝關節屈曲 (°)', data: dataAnkle, borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0, tension: 0.3 }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      scales: {
-        x: { title: { display: true, text: '時間 (秒)' } },
-        y: { title: { display: true, text: '角度 (°)' } }
-      },
-      onClick: (event, elements, chart) => {
-        if (elements.length > 0) {
-          const dataIndex = elements[0].index;
-          const targetTime = parseFloat(chart.data.labels[dataIndex]);
-          videoPreview.currentTime = targetTime;
-          frameRange.value = Math.round(targetTime * fps);
-          document.querySelector("#analyzer").scrollIntoView({ behavior: "smooth" });
-        }
-      }
-    }
-  });
-}
-
-const formatTime = (seconds) => {
-  if (!Number.isFinite(seconds)) return "00:00.000";
-  const minutes = Math.floor(seconds / 60);
-  const remaining = seconds - minutes * 60;
-  return `${String(minutes).padStart(2, "0")}:${remaining.toFixed(3).padStart(6, "0")}`;
-};
-
-const getCurrentFrame = () => Number(frameRange.value || 0);
-
-function setAppEnabled(enabled) {
-  [videoInput, $("#testType"), fpsSelect, $("#uploadButton"), $("#heroUpload")].forEach((element) => {
-    if (element) element.disabled = !enabled;
-  });
 }
 
 function updateReadouts() {
   const fps = Number(fpsSelect.value);
-  const current = getCurrentFrame();
+  const current = Number(frameRange.value || 0);
   readoutS.textContent = `S ${startFrame === null ? "—" : formatTime(startFrame / fps)}`;
   takeoffReadout.textContent = `T ${takeoffFrame === null ? "—" : formatTime(takeoffFrame / fps)}`;
   landingReadout.textContent = `L ${landingFrame === null ? "—" : formatTime(landingFrame / fps)}`;
@@ -537,22 +409,26 @@ function updateReadouts() {
 }
 
 function calculateResult() {
-  if (takeoffFrame === null || landingFrame === null) return;
-  if (landingFrame <= takeoffFrame) return;
-  
+  if (takeoffFrame === null || landingFrame === null || landingFrame <= takeoffFrame) return;
   const seconds = (landingFrame - takeoffFrame) / Number(fpsSelect.value);
   const height = (9.81 * seconds * seconds * 100) / 8;
-  const flight = `${seconds.toFixed(3)} <i>s</i>`;
-  const jumpHeight = `${height.toFixed(1)} <i>cm</i>`;
-  
-  flightMetric.innerHTML = flight;
-  heightMetric.innerHTML = jumpHeight;
-  resultFlight.innerHTML = flight;
-  resultHeight.innerHTML = jumpHeight;
-  saveAttempt.disabled = false;
+  flightMetric.innerHTML = `${seconds.toFixed(3)} <i>s</i>`;
+  heightMetric.innerHTML = `${height.toFixed(1)} <i>cm</i>`;
+  resultFlight.innerHTML = `${seconds.toFixed(3)} <i>s</i>`;
+  resultHeight.innerHTML = `${height.toFixed(1)} <i>cm</i>`;
 }
 
-// 修正後的影片載入與事件觸發
+const formatTime = (seconds) => {
+  if (!Number.isFinite(seconds)) return "00:00.000";
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds - minutes * 60;
+  return `${String(minutes).padStart(2, "0")}:${remaining.toFixed(3).padStart(6, "0")}`;
+};
+
+// ============================================================================
+// 5. 影片載入主程式 (修復黑屏與按鈕觸發)
+// ============================================================================
+
 function loadVideo(file) {
   if (!file) return;
   if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -577,42 +453,37 @@ function loadVideo(file) {
   
   videoPreview.addEventListener("loadedmetadata", async () => {
     totalFrames = Math.max(1, Math.round(videoPreview.duration * Number(fpsSelect.value)));
-    enableVideoTools();
+    frameRange.max = String(totalFrames);
+    clipRange.max = String(totalFrames);
+    [frameRange, clipRange, $("#previousFrame"), $("#nextFrame"), $("#playPause"), autoPoseButton].forEach((el) => { el.disabled = false; });
+    $("#durationLabel").textContent = formatTime(videoPreview.duration || 0);
+    updateReadouts();
+    
     analysisStatus.textContent = "影片已就緒，AI 正在自動掃描全片...";
     await analyzeVideoPose();
   }, { once: true });
 
-  videoPreview.addEventListener("error", (e) => {
-    console.error("HTML5 Video 錯誤:", videoPreview.error);
+  videoPreview.addEventListener("error", () => {
     analysisStatus.className = "analysis-status error";
     analysisStatus.textContent = "瀏覽器無法解碼此影片格式，建議轉換為標準 MP4 (H.264) 後重試。";
   }, { once: true });
 }
 
-function enableVideoTools() {
-  [frameRange, clipRange, $("#previousFrame"), $("#nextFrame"), $("#playPause"), autoPoseButton].forEach((el) => { el.disabled = false; });
-  frameRange.max = String(totalFrames);
-  clipRange.max = String(totalFrames);
-  $("#durationLabel").textContent = formatTime(videoPreview.duration || 0);
-  updateReadouts();
-}
-
 // ============================================================================
-// 6. 事件監聽與綁定區
+// 6. 事件綁定區
 // ============================================================================
 
 safetyConfirm.addEventListener("change", () => { enterApp.disabled = !safetyConfirm.checked; });
 enterApp.addEventListener("click", () => { safetyModal.classList.add("hidden"); setAppEnabled(true); });
 $("#openGuide").addEventListener("click", () => guideModal.classList.remove("hidden"));
 $("#closeGuide").addEventListener("click", () => guideModal.classList.add("hidden"));
-guideModal.addEventListener("click", (event) => { if (event.target === guideModal) guideModal.classList.add("hidden"); });
 
 $("#uploadButton").addEventListener("click", () => videoInput.click());
 $("#heroUpload").addEventListener("click", () => { document.querySelector("#analyzer").scrollIntoView({ behavior: "smooth" }); videoInput.click(); });
 videoInput.addEventListener("change", (event) => loadVideo(event.target.files[0]));
 
 frameRange.addEventListener("input", () => {
-  const frame = getCurrentFrame();
+  const frame = Number(frameRange.value || 0);
   if (videoPreview.duration) videoPreview.currentTime = frame / Number(fpsSelect.value);
   updateReadouts();
   renderStoredPose(frame);
@@ -627,14 +498,20 @@ videoPreview.addEventListener("timeupdate", () => {
   }
 });
 
-$("#previousFrame").addEventListener("click", () => { frameRange.value = String(Math.max(0, getCurrentFrame() - 1)); frameRange.dispatchEvent(new Event("input")); });
-$("#nextFrame").addEventListener("click", () => { frameRange.value = String(Math.min(totalFrames, getCurrentFrame() + 1)); frameRange.dispatchEvent(new Event("input")); });
+$("#previousFrame").addEventListener("click", () => { frameRange.value = String(Math.max(0, Number(frameRange.value) - 1)); frameRange.dispatchEvent(new Event("input")); });
+$("#nextFrame").addEventListener("click", () => { frameRange.value = String(Math.min(totalFrames, Number(frameRange.value) + 1)); frameRange.dispatchEvent(new Event("input")); });
 $("#playPause").addEventListener("click", () => {
   if (videoPreview.paused) { videoPreview.play(); $("#playPause").innerHTML = "Ⅱ <span>暫停</span>"; }
   else { videoPreview.pause(); $("#playPause").innerHTML = "▶ <span>播放</span>"; }
 });
 
 autoPoseButton.addEventListener("click", analyzeVideoPose);
+
+function setAppEnabled(enabled) {
+  [videoInput, $("#testType"), fpsSelect, $("#uploadButton"), $("#heroUpload")].forEach((element) => {
+    if (element) element.disabled = !enabled;
+  });
+}
 
 safetyModal.classList.add("hidden");
 setAppEnabled(true);
